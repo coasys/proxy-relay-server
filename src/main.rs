@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, env};
 use serde_json::{json, to_string};
 use ring::digest;
 use bytes::Bytes;
@@ -36,15 +36,22 @@ pub struct Proxy {
     url: String,
 }
 
-const API_TOKEN: &str = "HJ7xSxLPknSvawhxsq02wSVcurowCr55uz_9D2Hk";
-// Function to store a value in Cloudflare KV
+const ACCOUNT_ID: &str = "c47108641b30e868d9950f1adf09c9b1";
+const RAND_KV: &str = "2dbbef15e98a4b918e572ec41729e6d0";
+const CREDENTIALS_KV: &str = "be670d144dc64cc28d51fcf56e31ad4e";
+
 async fn store_value(store_name: &str, key: &str, value: &str) -> Result<(), String> {
+    let api_token = match env::var("API_TOKEN") {
+        Ok(val) => val,
+        Err(_e) => String::from("Default Value"), // Replace "Default Value" with your actual default value
+    };
+
     let client = Client::new();
-    let url = format!("https://api.cloudflare.com/client/v4/accounts/c47108641b30e868d9950f1adf09c9b1/storage/kv/namespaces/{}/values/{}", store_name, key);
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{}/storage/kv/namespaces/{}/values/{}", ACCOUNT_ID, store_name, key);
 
     let response = client
         .put(&url)
-        .header("Authorization", format!("Bearer {}", API_TOKEN))
+        .header("Authorization", format!("Bearer {}", api_token))
         .body(value.to_string())
         .send()
         .await.unwrap();
@@ -54,19 +61,22 @@ async fn store_value(store_name: &str, key: &str, value: &str) -> Result<(), Str
         Ok(())
     } else {
         println!("Failed to store value. Status code: {}", response.status());
-        // Err(reqwest::Error::custom(format!("Failed to store value. Status code: {}", response.status())))
         Err(format!("Failed to store value. Status code: {}", response.status()))
     }
 }
 
-// Function to retrieve a value from Cloudflare KV
 async fn get_value(store_name: &str, key: &str) -> Result<String, String> {
+    let api_token = match env::var("API_TOKEN") {
+        Ok(val) => val,
+        Err(_e) => String::from("Default Value"), // Replace "Default Value" with your actual default value
+    };
+
     let client = Client::new();
-    let url = format!("https://api.cloudflare.com/client/v4/accounts/c47108641b30e868d9950f1adf09c9b1/storage/kv/namespaces/{}/values/{}", store_name, key);
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{}/storage/kv/namespaces/{}/values/{}", ACCOUNT_ID, store_name, key);
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", API_TOKEN))
+        .header("Authorization", format!("Bearer {}", api_token))
         .send()
         .await.unwrap();
 
@@ -103,42 +113,32 @@ async fn main() {
 async fn default_handler(path: warp::path::FullPath, query_params: HashMap<String, String>) -> Result<impl Reply, Rejection> {
     let path = path.as_str();
     let query = serde_urlencoded::to_string(&query_params).unwrap_or_default();
-    println!("Default route: {}, {}", path, query);
 
     let dest_path = format!("https://proxy-sg.ad4m.dev{}?{}", path.to_lowercase(), query);
-    println!("Default route: {}", dest_path);
 
     let client = Client::new();
 
     let response = client
         .get(&dest_path)
-        .header("Authorization", format!("Bearer {}", API_TOKEN))
         .send()
         .await.unwrap();
 
     if response.status().is_success() {
         let value_response = response.json::<Proxy>().await;
         let res = value_response.unwrap();
-        println!("meow {:?}", res);
         Ok(warp::reply::json(&res))
     } else {
-        println!("Failed to retrieve value. Status code: {}", response.status());
         Ok(warp::reply::json(&"error".to_string()))
     }
-
-    // Ok(warp::reply::with_status("error".to_string(), warp::http::StatusCode::INTERNAL_SERVER_ERROR))
 }
 
 
 async fn login_handler(query_params: HashMap<String, String>) -> Result<impl Reply, Rejection> {
     if let Some(did) = query_params.get("did") {
-        println!("Tried login with did: {}", did);
 
         let token = Uuid::new_v4().to_string();
 
-        store_value("2dbbef15e98a4b918e572ec41729e6d0", did, &token).await.unwrap();
-
-        println!("Generated token: {}", token);
+        store_value(RAND_KV, did, &token).await.unwrap();
 
         Ok(warp::reply::with_status(token, warp::http::StatusCode::OK))
     } else {
@@ -150,31 +150,22 @@ async fn login_verify_handler(query_params: HashMap<String, String>) -> Result<i
     if let (Some(did), Some(sig), Some(pub_key)) =
         (query_params.get("did"), query_params.get("signature"), query_params.get("publicKey"))
     {
-        println!("Verify login with did: {} | {}", did, sig);
         let did_with_key = format!("did:key:{}", did).to_string();
 
-        println!("Verify login with did 1: {}", did_with_key);
         if let Ok(key_pair) = PatchedKeyPair::try_from(did_with_key.as_str()) {
-            let raw_message = json!({ "data": get_value("2dbbef15e98a4b918e572ec41729e6d0", did).await.unwrap() });
+            let raw_message = json!({ "data": get_value(RAND_KV, did).await.unwrap() });
 
             let result = build_message_raw(raw_message);
             
-            let key = did_key::resolve(&did_with_key).unwrap();
-
-            let bytes = decode(sig).unwrap_or_else(|e| {
-                panic!("Error decoding hexadecimal string: {:?}", e);
-            });
-
-            println!("meow 0000 {:?} | {:?}", result, bytes);
-            println!("meow 1111 {:?}", key.verify(&result, &bytes));
-
+            let bytes = decode(sig).map_err(|e| {
+                eprintln!("Error decoding hexadecimal string: {:?}", e);
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Error decoding hexadecimal string")
+            }).unwrap();
 
             match key_pair.verify(&result, &bytes) {
                 Ok(_) => {
                     let token = Uuid::new_v4().to_string();
-                    store_value("be670d144dc64cc28d51fcf56e31ad4e", did.to_lowercase().as_str(), &token).await.unwrap();
-
-                    println!("Generated token: {}", token);
+                    store_value(CREDENTIALS_KV, did.to_lowercase().as_str(), &token).await.unwrap();
 
                     Ok(warp::reply::with_status(token, warp::http::StatusCode::OK))
                 },

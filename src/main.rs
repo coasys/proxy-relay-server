@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use warp::{Filter, Rejection, Reply};
 use reqwest::{self, Client};
 use uuid::Uuid;
+use lazy_static::lazy_static;
 
 use did_key::{CoreSign, PatchedKeyPair};
 
@@ -36,22 +37,20 @@ pub struct Proxy {
     url: String,
 }
 
-const ACCOUNT_ID: &str = "c47108641b30e868d9950f1adf09c9b1";
-const RAND_KV: &str = "2dbbef15e98a4b918e572ec41729e6d0";
-const CREDENTIALS_KV: &str = "be670d144dc64cc28d51fcf56e31ad4e";
+lazy_static! {
+    static ref API_TOKEN: String = env::var("API_TOKEN").unwrap_or_else(|_| panic!("API_TOKEN env variable is missing"));
+    static ref ACCOUNT_ID: String = env::var("ACCOUNT_ID").unwrap_or_else(|_| panic!("ACCOUNT_ID env variable is missing"));
+    static ref RAND_KV: String = env::var("RAND_KV").unwrap_or_else(|_| panic!("RAND_KV env variable is missing"));
+    static ref CREDENTIALS_KV: String = env::var("CREDENTIALS_KV").unwrap_or_else(|_| panic!("CREDENTIALS_KV env variable is missing"));
+}
 
 async fn store_value(store_name: &str, key: &str, value: &str) -> Result<(), String> {
-    let api_token = match env::var("API_TOKEN") {
-        Ok(val) => val,
-        Err(_e) => String::from("Default Value"), // Replace "Default Value" with your actual default value
-    };
-
     let client = Client::new();
-    let url = format!("https://api.cloudflare.com/client/v4/accounts/{}/storage/kv/namespaces/{}/values/{}", ACCOUNT_ID, store_name, key);
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{}/storage/kv/namespaces/{}/values/{}", ACCOUNT_ID.as_str(), store_name, key);
 
     let response = client
         .put(&url)
-        .header("Authorization", format!("Bearer {}", api_token))
+        .header("Authorization", format!("Bearer {}", API_TOKEN.as_str()))
         .body(value.to_string())
         .send()
         .await.unwrap();
@@ -66,17 +65,12 @@ async fn store_value(store_name: &str, key: &str, value: &str) -> Result<(), Str
 }
 
 async fn get_value(store_name: &str, key: &str) -> Result<String, String> {
-    let api_token = match env::var("API_TOKEN") {
-        Ok(val) => val,
-        Err(_e) => String::from("Default Value"), // Replace "Default Value" with your actual default value
-    };
-
     let client = Client::new();
-    let url = format!("https://api.cloudflare.com/client/v4/accounts/{}/storage/kv/namespaces/{}/values/{}", ACCOUNT_ID, store_name, key);
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{}/storage/kv/namespaces/{}/values/{}", ACCOUNT_ID.as_str(), store_name, key);
 
     let response = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", api_token))
+        .header("Authorization", format!("Bearer {}", API_TOKEN.as_str()))
         .send()
         .await.unwrap();
 
@@ -138,7 +132,7 @@ async fn login_handler(query_params: HashMap<String, String>) -> Result<impl Rep
 
         let token = Uuid::new_v4().to_string();
 
-        store_value(RAND_KV, did, &token).await.unwrap();
+        store_value(RAND_KV.as_str(), did, &token).await.unwrap();
 
         Ok(warp::reply::with_status(token, warp::http::StatusCode::OK))
     } else {
@@ -147,13 +141,13 @@ async fn login_handler(query_params: HashMap<String, String>) -> Result<impl Rep
 }
 
 async fn login_verify_handler(query_params: HashMap<String, String>) -> Result<impl Reply, Rejection> {
-    if let (Some(did), Some(sig), Some(pub_key)) =
-        (query_params.get("did"), query_params.get("signature"), query_params.get("publicKey"))
+    if let (Some(did), Some(sig)) =
+        (query_params.get("did"), query_params.get("signature"))
     {
         let did_with_key = format!("did:key:{}", did).to_string();
 
         if let Ok(key_pair) = PatchedKeyPair::try_from(did_with_key.as_str()) {
-            let raw_message = json!({ "data": get_value(RAND_KV, did).await.unwrap() });
+            let raw_message = json!({ "data": get_value(RAND_KV.as_str(), did).await.unwrap() });
 
             let result = build_message_raw(raw_message);
             
@@ -165,7 +159,7 @@ async fn login_verify_handler(query_params: HashMap<String, String>) -> Result<i
             match key_pair.verify(&result, &bytes) {
                 Ok(_) => {
                     let token = Uuid::new_v4().to_string();
-                    store_value(CREDENTIALS_KV, did.to_lowercase().as_str(), &token).await.unwrap();
+                    store_value(CREDENTIALS_KV.as_str(), did.to_lowercase().as_str(), &token).await.unwrap();
 
                     Ok(warp::reply::with_status(token, warp::http::StatusCode::OK))
                 },

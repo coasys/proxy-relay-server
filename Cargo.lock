@@ -1298,6 +1298,7 @@ dependencies = [
  "crypto",
  "did-key",
  "hex",
+ "lazy_static",
  "reqwest",
  "ring",
  "serde",

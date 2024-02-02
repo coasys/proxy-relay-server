@@ -139,7 +139,7 @@ async fn main() {
 
     let routes = login_route.or(login_verify_route).or(default_route);
 
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    warp::serve(routes).run(([0, 0, 0, 0], 3030)).await;
 }
 
 async fn default_handler(path: warp::path::FullPath, query_params: HashMap<String, String>, remote_addr: Option<SocketAddr>,) -> Result<impl Reply, Rejection> {

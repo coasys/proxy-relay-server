@@ -1,9 +1,7 @@
 use std::{collections::HashMap, env, net::{IpAddr, SocketAddr}};
 use maxminddb::geoip2::{self, enterprise::Continent};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
-use serde_json::{json, to_string};
-use ring::digest;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use warp::{Filter, Rejection, Reply};
 use reqwest::{self, Client};
@@ -18,16 +16,10 @@ const SG_PROXY_SERVER: &str = "https://proxy-sg.ad4m.dev";
 const US_PROXY_SERVER: &str = "https://proxy-us.ad4m.dev";
 const DE_PROXY_SERVER: &str = "https://proxy-de.ad4m.dev";
 
-fn build_message_raw(data: serde_json::Value) -> Vec<u8> {
-    let payload_string = to_string(&data).expect("Error serializing JSON");
-
-    let payload_bytes = payload_string.into_bytes();
-
-    let hash = digest::digest(&digest::SHA256, &payload_bytes);
-
-    let hash_bytes = Bytes::from(hash.as_ref().to_vec());
-
-    hash_bytes.to_vec()
+fn hash_message(message: &String) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(message.as_bytes());
+    hasher.finalize().as_slice().try_into().expect("Hash should be 32 bytes")
 }
 
 #[derive(Serialize)]
@@ -148,7 +140,7 @@ async fn default_handler(path: warp::path::FullPath, query_params: HashMap<Strin
         None => return Ok(warp::reply::json(&"error".to_string())),
     };
 
-    let ip_addr = remote_addr.unwrap().ip().to_string();
+    let ip_addr = ip.to_string();
 
     let continent_result = get_continent(ip_addr.as_str()).await.unwrap();
 
@@ -205,10 +197,8 @@ async fn login_verify_handler(query_params: HashMap<String, String>) -> Result<i
         let did_with_key = format!("did:key:{}", did).to_string();
 
         if let Ok(key_pair) = PatchedKeyPair::try_from(did_with_key.as_str()) {
-            let raw_message = json!({ "data": get_value(RAND_KV.as_str(), did).await.unwrap() });
+            let result = hash_message(&get_value(RAND_KV.as_str(), did).await.unwrap());
 
-            let result = build_message_raw(raw_message);
-            
             let bytes = decode(sig).map_err(|e| {
                 eprintln!("Error decoding hexadecimal string: {:?}", e);
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "Error decoding hexadecimal string")
@@ -240,7 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_continent() {
-        let ip = "0.0.0.0"; 
+        let ip = "0.0.0.0";
         let continent = get_continent(ip).await.unwrap();
         assert_eq!(continent, "NA");
     }
